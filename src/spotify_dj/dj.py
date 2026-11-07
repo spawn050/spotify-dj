@@ -1,4 +1,6 @@
+import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from spotify_dj.factory import SourceFactory, SourceSpec
@@ -8,10 +10,21 @@ from spotify_dj.sources import InvalidRuleError
 from spotify_dj.spotify import NoActiveDeviceError, SpotifyGateway
 
 
+# Spotify's queue lags a write by about a second (measured live); until then a song we just
+# queued looks like it already played. Trust our own record for this long.
+QUEUE_LAG_SECONDS = 3.0
+
+
 @dataclass(frozen=True)
 class MixReport:
     added: list[str]  # names of sources that joined the mix
     flags: list[str]  # things Spotify could not do, to relay to the user
+
+
+@dataclass(frozen=True)
+class _Queued:
+    track: Track
+    at: float  # clock reading when we queued it
 
 
 @dataclass(frozen=True)
@@ -29,13 +42,19 @@ class DJ:
     """
 
     def __init__(
-        self, gateway: SpotifyGateway, factory: SourceFactory, mixer: Mixer, queue_depth: int
+        self,
+        gateway: SpotifyGateway,
+        factory: SourceFactory,
+        mixer: Mixer,
+        queue_depth: int,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._gateway = gateway
         self._factory = factory
         self._mixer = mixer
         self._depth = queue_depth
-        self._pending: list[Track] = []  # songs we queued that have not started yet
+        self._clock = clock
+        self._pending: list[_Queued] = []  # songs we queued that have not started yet
         self.problem: str | None = None  # latest reason the queue could not be filled
 
     # --- changing the mix -------------------------------------------------
@@ -87,19 +106,23 @@ class DJ:
             except NoActiveDeviceError:
                 self.problem = "No active Spotify device. Start playback on any device."
                 return
-            self._pending.append(track)
+            self._pending.append(_Queued(track, self._clock()))
 
     def _forget_started(self, upcoming_uris: tuple[str, ...]) -> None:
         """Keep only our songs still waiting in Spotify's queue (others played or were skipped)."""
         waiting = Counter(upcoming_uris)
+        now = self._clock()
         still_pending = []
-        for track in self._pending:
-            if waiting[track.uri] > 0:
-                waiting[track.uri] -= 1
-                still_pending.append(track)
+        for queued in self._pending:
+            if waiting[queued.track.uri] > 0:
+                waiting[queued.track.uri] -= 1
+                still_pending.append(queued)
+            elif now - queued.at < QUEUE_LAG_SECONDS:  # too fresh to show up in Spotify's queue yet
+                still_pending.append(queued)
         self._pending = still_pending
 
     def status(self) -> Status:
         playback = self._gateway.playback()
         self._forget_started(playback.upcoming_uris)
-        return Status(playback.current, tuple(self._pending), self._mixer.weights(), self.problem)
+        up_next = tuple(queued.track for queued in self._pending)
+        return Status(playback.current, up_next, self._mixer.weights(), self.problem)

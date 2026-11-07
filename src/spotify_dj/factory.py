@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from spotify_dj.models import Track
 from spotify_dj.sources import (
@@ -15,6 +15,7 @@ from spotify_dj.sources import (
     Source,
     TopTracksSource,
     build_search_query,
+    is_wanted,
 )
 from spotify_dj.spotify import TIME_RANGES, SpotifyGateway
 
@@ -22,11 +23,17 @@ TOP_ARTIST_LIMIT = 10
 
 
 class TrackRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str
     artist: str
 
 
 class SourceSpec(BaseModel):
+    # Reject unknown fields (e.g. a made-up `mood`) instead of silently ignoring them,
+    # so an impossible request fails loudly and Claude can tell the user.
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["search", "top_tracks", "pinned"]
     name: str | None = Field(None, description="Unique label for this source; used to change its weight later.")
     weight: int = Field(1, ge=1, description="Share of the mix relative to other sources.")
@@ -71,14 +78,14 @@ class SourceFactory:
         )
         default = " ".join(filter(None, [spec.artist, spec.album, spec.genre, spec.year]))
         return BuiltSource(
-            spec.name or default, SearchSource(self._gateway, query), spec.weight
+            spec.name or default, SearchSource(self._gateway, query, spec.artist), spec.weight
         )
 
     def _top_tracks(self, spec: SourceSpec) -> BuiltSource:
         """The user's favourites first, then more songs by those same artists."""
         artists = spec.artists or self._top_artists()
         fallback = InterleavedSource(
-            *(SearchSource(self._gateway, build_search_query(artist=a)) for a in artists)
+            *(SearchSource(self._gateway, build_search_query(artist=a), a) for a in artists)
         )
         source = ChainedSource(TopTracksSource(self._gateway, spec.artists), fallback)
         default = "My top tracks" + (f" by {', '.join(spec.artists)}" if spec.artists else "")
@@ -90,8 +97,9 @@ class SourceFactory:
         for ref in spec.tracks or []:
             query = f'track:"{_clean(ref.title)}" artist:"{_clean(ref.artist)}"'
             results = self._gateway.search_tracks(query)
-            if results:
-                found.append(results[0])
+            match = next((t for t in results if is_wanted(t, ref.artist)), None)
+            if match:
+                found.append(match)
             else:
                 missing.append(f"{ref.title} - {ref.artist}")
         notes = [f"Not found on Spotify: {', '.join(missing)}"] if missing else []

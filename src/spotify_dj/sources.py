@@ -6,16 +6,21 @@ the Mixer can treat all sources the same.
 """
 
 import re
+import unicodedata
 from abc import ABC, abstractmethod
 from collections.abc import Collection, Iterator
 from itertools import islice
 
 from spotify_dj.models import Track
-from spotify_dj.spotify import TIME_RANGES, SpotifyGateway
+from spotify_dj.spotify import SEARCH_PAGE_SIZE, TIME_RANGES, SpotifyGateway
 
 # Spotify search cannot page past offset 1000.
 MAX_SEARCH_OFFSET = 1000
 _YEAR = re.compile(r"^\d{4}(-\d{4})?$")
+# Spotify search is full of karaoke / tribute / instrumental re-recordings of real hits.
+_JUNK = re.compile(
+    r"\b(karaoke|instrumental|tribute|made famous|originally performed|backing track)\b", re.IGNORECASE
+)
 
 
 class InvalidRuleError(ValueError):
@@ -43,6 +48,20 @@ def build_search_query(
     if not parts:
         raise InvalidRuleError("a search needs at least one of artist, album, genre or year")
     return " ".join(parts)
+
+
+def _fold(text: str) -> str:
+    """Case- and accent-insensitive form, so "Beyonce" matches "Beyoncé"."""
+    decomposed = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).casefold()
+
+
+def is_wanted(track: Track, artist: str | None = None) -> bool:
+    """False for karaoke-style junk and, when `artist` is given, for tracks not credited to
+    them (Spotify's artist match is fuzzy: "Taylor Swift" also finds "Spanish Swift")."""
+    if _JUNK.search(f"{track.name} {track.album}"):
+        return False
+    return artist is None or any(_fold(a) == _fold(artist) for a in track.artists)
 
 
 class Source(ABC):
@@ -73,21 +92,22 @@ class Source(ABC):
 
 
 class SearchSource(Source):
-    """Pages through Spotify search results, 10 at a time."""
+    """Pages through Spotify search results, 10 at a time, skipping unwanted tracks."""
 
-    def __init__(self, gateway: SpotifyGateway, query: str) -> None:
+    def __init__(self, gateway: SpotifyGateway, query: str, artist: str | None = None) -> None:
         super().__init__()
         self._gateway = gateway
         self._query = query
+        self._artist = artist  # when set, only tracks credited to this artist
 
     def _generate(self) -> Iterator[Track]:
-        offset = 0
-        while offset < MAX_SEARCH_OFFSET:
+        # Offsets count result slots, and Spotify may return fewer than 10 per page,
+        # so step by the page size rather than by how many tracks came back.
+        for offset in range(0, MAX_SEARCH_OFFSET, SEARCH_PAGE_SIZE):
             page = self._gateway.search_tracks(self._query, offset)
             if not page:
                 return
-            yield from page
-            offset += len(page)
+            yield from (track for track in page if is_wanted(track, self._artist))
 
 
 class TopTracksSource(Source):
@@ -96,7 +116,7 @@ class TopTracksSource(Source):
     def __init__(self, gateway: SpotifyGateway, artists: Collection[str] | None = None) -> None:
         super().__init__()
         self._gateway = gateway
-        self._artists = {name.casefold() for name in artists or ()}
+        self._artists = {_fold(name) for name in artists or ()}
         self._tracks: list[Track] | None = None  # fetched once per session
 
     def _generate(self) -> Iterator[Track]:
@@ -109,7 +129,7 @@ class TopTracksSource(Source):
         yield from self._tracks
 
     def _wanted(self, track: Track) -> bool:
-        return not self._artists or any(a.casefold() in self._artists for a in track.artists)
+        return not self._artists or any(_fold(a) in self._artists for a in track.artists)
 
 
 class PinnedSource(Source):

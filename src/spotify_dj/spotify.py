@@ -51,6 +51,7 @@ def _to_track(item: dict) -> Track:
         uri=item["uri"],
         name=item["name"],
         artists=tuple(artist["name"] for artist in item["artists"]),
+        album=item.get("album", {}).get("name", ""),
     )
 
 

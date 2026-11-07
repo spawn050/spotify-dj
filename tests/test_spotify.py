@@ -12,8 +12,11 @@ from spotify_dj.spotify import (
 )
 
 
-def _item(uri: str, name: str, *artists: str) -> dict:
-    return {"uri": uri, "name": name, "artists": [{"name": a} for a in artists]}
+def _item(uri: str, name: str, *artists: str, album: str | None = None) -> dict:
+    item = {"uri": uri, "name": name, "artists": [{"name": a} for a in artists]}
+    if album:
+        item["album"] = {"name": album}
+    return item
 
 
 class FakeSpotipy:
@@ -99,3 +102,9 @@ def test_connect_without_saved_login_refuses_to_start_interactive_auth(tmp_path,
 
     with pytest.raises(NotLoggedInError):
         connect(Settings(client_id="abc"))
+
+
+def test_album_name_is_carried_so_karaoke_albums_can_be_recognised(client):
+    client.search = lambda **kw: {"tracks": {"items": [_item("u", "Style", "Taylor Swift", album="1989")]}}
+
+    assert SpotipyGateway(client).search_tracks("q")[0].album == "1989"

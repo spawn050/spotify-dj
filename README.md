@@ -3,11 +3,14 @@
 Talk to Claude like it's a DJ. An [MCP](https://modelcontextprotocol.io) server that lets Claude Code
 build a Spotify mix from plain-English requests and keep the queue topped up while you listen.
 
+```
 > "Play Taylor Swift songs from 2015"
-> "Add One Direction to the mix, but only upbeat ones"
+> "Add One Direction to the mix"
 > "More Taylor"
 > "Play artists like The Script"
 > "Play some Taylor Swift songs I might like"
+...
+```
 
 <!-- TODO: add demo GIF here -->
 ![demo](docs/demo.gif)
@@ -34,32 +37,48 @@ flowchart LR
     Gateway -- spotipy --> Spotify[(Spotify Web API)]
 ```
 
-**Claude decides what to play; the server plays it.** Claude turns a request into a *mix* of sources
-with weights. A background loop (every 5 s, or immediately when the mix changes) tops Spotify's queue up
+- **Claude interprets your requests, the mcp server plays the music.** 
+- Claude turns a request into a *mix* of sources with weights.
+- A background loop (every 5 s, or immediately when the mix changes) refills Spotify's queue up
 to a small depth (default 3 songs including the current one), so a new request is heard within a song or two.
+<br>
+<br>
 
 | Source | What it is | Example request |
 |---|---|---|
-| `search` | Spotify search by artist / album / genre / year. Endless. | "Taylor Swift from 2015" |
+| `search` | Spotify search by artist / album / genre / year. | "Taylor Swift from 2015" |
 | `top_tracks` | Your own favourites, then more songs by those artists. | "songs I might like" |
 | `pinned` | Specific songs Claude picks from its own knowledge. | "upbeat One Direction" |
 
 Sources are blended by **weight** ("more Taylor"), never repeat a song until everything has played, and
 anything Spotify can't do is **flagged** back to you rather than silently ignored.
 
-## The LLM replaces Spotify's deprecated APIs
+## Using LLM's music knowledge as a fallback
 
-Spotify has been closing the doors a music-recommendation app would use. New apps can no longer call
-recommendations, related artists or audio features (Nov 2024), and in Feb 2026 Development Mode lost
-artist top tracks, cut search to 10 results per call, and now needs a Premium owner.
+Spotify doesn't support recommendations, related-artists and audio-features (mood, energy, …) APIs.
+So, we rely on LLM's music knowledge for certain cases: 
 
-Instead of working around that, this project leans on the model:
+- **"Artists like The Script"**: LLM names similar artists from its own knowledge which become the  search sources
+- **"Upbeat"** (Spotify can't filter by mood): LLM picks specific songs, the server looks each one up.
+- **Anything impossible**: the tool design has no `mood` field, and LLM is told to say what was approximated.
 
-- **"Artists like The Script"**: Claude names similar artists from its own knowledge; each becomes a search source.
-- **"Upbeat"** (Spotify can't filter by mood): Claude picks specific songs, the server looks each one up.
-- **Anything impossible**: the tool design has no `mood` field to misuse, and Claude is told to say what was approximated.
+## Architecture
 
-Spotify becomes a catalogue and a player; the taste lives in the model.
+Four layers, from the outside in:
+
+| Layer | Files | Responsibility |
+|---|---|---|
+| MCP tools | `server.py` | 5 thin tools: parse Claude's request, call the DJ, describe the result. The DJ guidance for Claude lives in the tool descriptions. |
+| Session | `session.py` | Shares one DJ between tool calls and the background loop behind a lock. Blocking Spotify calls run in worker threads. |
+| DJ domain | `dj.py`, `mixer.py`, `factory.py`, `sources.py` | Pure logic: build sources from requests, blend them by weight, keep the queue stocked. |
+| Gateway | `spotify.py` | The only module that imports spotipy: login, search, top items, playback and queue. |
+
+`cli.py` wires everything together and provides the `login` command.
+
+- **Dependencies point inward.** The domain only knows the `SpotifyGateway` protocol, so unit tests run on an in-memory fake instead of Spotify.
+- **Sources are lazy streams** behind one `Source` base class, so a new kind of source plugs into the mixer without changing it.
+- **The queue is reconciled, not assumed.** Every tick compares the songs the DJ queued with Spotify's real queue, so skips and your own queued songs don't skew the count. Spotify's queue lags behind writes by about a second, so freshly queued songs are trusted for 3 s.
+- **Failures don't stop the music.** Expected errors go back to Claude as messages, background errors go to `logs/spotify-dj.log`, and stdout is left alone because it carries the MCP protocol.
 
 ## Setup
 
@@ -93,21 +112,6 @@ Everything the server writes stays in this folder: `.env`, `.spotify_token.json`
 uv run pytest            # unit tests, no network (fake Spotify)
 uv run pytest -m live    # real Spotify; needs login + a playing device; queues real songs
 ```
-
-## Reading the code
-
-Under 900 lines in `src/spotify_dj/`. A good order:
-
-1. `models.py`, `spotify.py`: the data and the only module that touches Spotify (`SpotifyGateway` is the seam).
-2. `sources.py`: every music origin is a lazy stream behind one `Source` base class.
-3. `mixer.py`: weighted round-robin blend with a no-repeat history.
-4. `factory.py`: turns Claude's structured request into a source, rejecting what Spotify can't answer.
-5. `dj.py`: `tick()` keeps the queue stocked by comparing what *we* queued with Spotify's real queue.
-6. `session.py`, `server.py`, `cli.py`: the lock + loop, the MCP tools, and the wiring.
-
-Design notes: dependencies point inward (the domain only knows the `SpotifyGateway` protocol, so tests
-use an in-memory fake); new source types plug into the mixer without changing it; interfaces exist only
-where something is actually swapped (Spotify ↔ fake, source ↔ source).
 
 ## Limitations
 

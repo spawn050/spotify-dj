@@ -9,13 +9,14 @@ from spotify_dj.mixer import Mixer
 from spotify_dj.server import build_server
 from spotify_dj.session import DJSession
 from spotify_dj.spotify import NotLoggedInError
-from tests.fakes import FakeGateway, make_tracks
+from tests.fakes import Clock, FakeGateway, make_tracks
 
 
-def make_session(gateway: FakeGateway, poll_seconds: float = 0.01) -> DJSession:
+def make_session(gateway: FakeGateway, clock: Clock | None = None, poll_seconds: float = 0.01) -> DJSession:
     gateway.search_results['artist:"Taylor Swift"'] = make_tracks("Taylor Swift", 10)
     gateway.current = make_tracks("Someone", 1)[0]
-    return DJSession(lambda: DJ(gateway, SourceFactory(gateway), Mixer(), 3), poll_seconds)
+    dj_clock = clock or Clock()
+    return DJSession(lambda: DJ(gateway, SourceFactory(gateway), Mixer(), 3, clock=dj_clock), poll_seconds)
 
 
 async def call(server, tool: str, arguments: dict | None = None) -> str:
@@ -67,8 +68,8 @@ async def test_background_loop_stocks_the_queue():
 
 
 async def test_background_loop_survives_a_failing_tick_and_recovers():
-    gateway = FakeGateway()
-    server = build_server(make_session(gateway))
+    gateway, clock = FakeGateway(), Clock()
+    server = build_server(make_session(gateway, clock))
 
     async with Client(server) as client:
         await client.call_tool("set_mix", {"sources": [{"type": "search", "artist": "Taylor Swift"}]})
@@ -80,6 +81,21 @@ async def test_background_loop_survives_a_failing_tick_and_recovers():
 
         gateway.playback = working
         gateway.skip_queue()
+        clock.advance(10)
         await asyncio.sleep(0.2)
 
     assert len(gateway.queue) == 2
+
+
+async def test_unsupported_fields_such_as_mood_are_rejected_not_ignored():
+    gateway = FakeGateway()
+    server = build_server(make_session(gateway))
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "set_mix", {"sources": [{"type": "search", "artist": "Taylor Swift", "mood": "upbeat"}]}
+        )
+
+    assert result.is_error
+    assert "mood" in result.content[0].text
+    assert gateway.queue == []

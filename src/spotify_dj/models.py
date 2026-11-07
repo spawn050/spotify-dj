@@ -6,6 +6,7 @@ class Track:
     uri: str
     name: str
     artists: tuple[str, ...]
+    album: str = ""
 
     def __str__(self) -> str:
         return f"{self.name} - {', '.join(self.artists)}"

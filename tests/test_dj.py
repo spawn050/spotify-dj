@@ -3,7 +3,7 @@ import pytest
 from spotify_dj.dj import DJ
 from spotify_dj.factory import SourceFactory, SourceSpec
 from spotify_dj.mixer import Mixer, UnknownSourceError
-from tests.fakes import FakeGateway, make_tracks
+from tests.fakes import Clock, FakeGateway, make_tracks
 
 TAYLOR = 'artist:"Taylor Swift"'
 ONE_D = 'artist:"One Direction"'
@@ -22,8 +22,8 @@ def gateway() -> FakeGateway:
     return fake
 
 
-def make_dj(gateway: FakeGateway, depth: int = 3) -> DJ:
-    return DJ(gateway, SourceFactory(gateway), Mixer(), depth)
+def make_dj(gateway: FakeGateway, depth: int = 3, clock: Clock | None = None) -> DJ:
+    return DJ(gateway, SourceFactory(gateway), Mixer(), depth, clock=clock or Clock())
 
 
 def test_tick_fills_the_queue_so_the_playing_song_plus_queued_equals_depth(gateway):
@@ -36,11 +36,13 @@ def test_tick_fills_the_queue_so_the_playing_song_plus_queued_equals_depth(gatew
 
 
 def test_tick_adds_one_song_each_time_a_song_starts(gateway):
-    dj = make_dj(gateway)
+    clock = Clock()
+    dj = make_dj(gateway, clock=clock)
     dj.set_mix([search("Taylor Swift")])
     dj.tick()
 
     gateway.advance()
+    clock.advance(10)  # a song takes far longer than Spotify's queue lag
     dj.tick()
 
     assert len(gateway.queue) == 2
@@ -67,11 +69,13 @@ def test_queue_depth_is_configurable(gateway):
 
 
 def test_a_skipped_queue_is_refilled(gateway):
-    dj = make_dj(gateway)
+    clock = Clock()
+    dj = make_dj(gateway, clock=clock)
     dj.set_mix([search("Taylor Swift")])
     dj.tick()
 
     gateway.skip_queue()
+    clock.advance(10)
     dj.tick()
 
     assert len(gateway.queue) == 2
@@ -164,3 +168,30 @@ def test_status_shows_now_playing_and_our_upcoming_songs(gateway):
 
     assert status.now_playing == gateway.current
     assert [t.uri for t in status.up_next] == [t.uri for t in gateway.queue]
+
+
+def test_songs_not_yet_visible_in_spotifys_queue_are_not_queued_twice(gateway):
+    clock = Clock()
+    dj = make_dj(gateway, clock=clock)
+    dj.set_mix([search("Taylor Swift")])
+    dj.tick()
+
+    gateway.queue_visible = False  # Spotify's queue read lags behind the write
+    clock.advance(1)
+    dj.tick()
+
+    assert len(gateway.queue) == 2  # no duplicates added
+    assert len(dj.status().up_next) == 2
+
+
+def test_songs_that_never_show_up_are_forgotten_after_the_grace_period(gateway):
+    clock = Clock()
+    dj = make_dj(gateway, clock=clock)
+    dj.set_mix([search("Taylor Swift")])
+    dj.tick()
+
+    gateway.queue_visible = False
+    clock.advance(10)  # long past the lag window: they really are gone
+    dj.tick()
+
+    assert len(gateway.queue) == 4

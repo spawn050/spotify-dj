@@ -8,8 +8,10 @@ from spotify_dj.sources import (
     SearchSource,
     TopTracksSource,
     build_search_query,
+    is_wanted,
     take,
 )
+from spotify_dj.models import Track
 from tests.fakes import FakeGateway, make_tracks
 
 
@@ -40,7 +42,7 @@ def test_search_source_pages_through_results_lazily():
     assert gateway.search_calls == [("q", 0)]  # only the first page was fetched
 
     assert len(take(source, 100)) == 22
-    assert [offset for _, offset in gateway.search_calls] == [0, 10, 20, 25]  # 25 = empty page
+    assert [offset for _, offset in gateway.search_calls] == [0, 10, 20, 30]  # 30 = empty page
 
 
 def test_search_source_with_no_results_is_exhausted():
@@ -132,3 +134,51 @@ def test_interleaved_source_takes_turns_and_drops_exhausted_sources():
     mixed = InterleavedSource(PinnedSource(a), PinnedSource(b))
 
     assert take(mixed, 10) == [a[0], b[0], a[1], a[2]]
+
+
+# --- filtering junk ---------------------------------------------------------
+def test_karaoke_and_tribute_versions_are_not_wanted():
+    taylor = ("Taylor Swift",)
+
+    assert is_wanted(Track("u1", "Style", taylor, "1989"))
+    assert not is_wanted(Track("u2", "Style - Karaoke Version", taylor, "1989"))
+    assert not is_wanted(Track("u3", "Style", taylor, "Taylor Swift Karaoke: 1989 (Deluxe)"))
+    assert not is_wanted(Track("u4", "Style (Instrumental)", taylor, "1989"))
+    assert not is_wanted(Track("u5", "Style", taylor, "A Tribute to Taylor Swift"))
+
+
+def test_remixes_and_live_versions_are_kept():
+    taylor = ("Taylor Swift",)
+
+    assert is_wanted(Track("u1", "Wildest Dreams - R3hab Remix", taylor, "Wildest Dreams"))
+    assert is_wanted(Track("u2", "Live While We're Young", ("One Direction",), "Take Me Home"))
+
+
+def test_artist_must_be_credited_and_accents_and_case_are_ignored():
+    song = Track("u1", "Halo", ("Beyoncé", "Someone"))
+
+    assert is_wanted(song, "beyonce")
+    assert is_wanted(song, "Someone")
+    assert not is_wanted(Track("u2", "Friday", ("Spanish Swift", "Luicia Taylor")), "Taylor Swift")
+
+
+def test_search_source_skips_unwanted_tracks_but_keeps_paging():
+    gateway = FakeGateway()
+    junk = [Track(f"junk{i}", f"Song {i} - Karaoke Version", ("Taylor Swift",)) for i in range(10)]
+    real = Track("real", "Style", ("Taylor Swift",))
+    stranger = Track("stranger", "Style", ("Spanish Swift",))
+    gateway.search_results["q"] = junk + [real, stranger]  # first page is 100% junk
+
+    source = SearchSource(gateway, "q", artist="Taylor Swift")
+
+    assert take(source, 10) == [real]
+
+
+def test_search_without_an_artist_still_filters_junk_but_not_by_credit():
+    gateway = FakeGateway()
+    gateway.search_results["q"] = [
+        Track("a", "Hit", ("Anyone",)),
+        Track("b", "Hit - Karaoke Version", ("Anyone",)),
+    ]
+
+    assert [t.uri for t in take(SearchSource(gateway, "q"), 10)] == ["a"]

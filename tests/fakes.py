@@ -19,6 +19,7 @@ class FakeGateway:
         self.current: Track | None = None
         self.queue: list[Track] = []
         self.no_device = False
+        self.queue_visible = True  # False simulates Spotify's queue read lagging behind writes
         self.search_calls: list[tuple[str, int]] = []
 
     def search_tracks(self, query: str, offset: int = 0) -> list[Track]:
@@ -32,7 +33,8 @@ class FakeGateway:
         return self.artists.get(time_range, [])
 
     def playback(self) -> Playback:
-        return Playback(self.current, tuple(t.uri for t in self.queue))
+        upcoming = tuple(t.uri for t in self.queue) if self.queue_visible else ()
+        return Playback(self.current, upcoming)
 
     def add_to_queue(self, uri: str) -> None:
         if self.no_device:
@@ -47,3 +49,16 @@ class FakeGateway:
     def skip_queue(self) -> None:
         """The user clears or skips past everything we queued."""
         self.queue.clear()
+
+
+class Clock:
+    """A manually advanced clock, so tests control the DJ's queue-lag grace period."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds

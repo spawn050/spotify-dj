@@ -89,3 +89,17 @@ def test_top_tracks_without_artists_fall_back_to_taking_turns_between_top_artist
 def test_top_tracks_with_no_listening_history_is_rejected(factory):
     with pytest.raises(InvalidRuleError):
         factory.build(SourceSpec(type="top_tracks"))
+
+
+def test_pinned_skips_karaoke_and_unrelated_matches_for_the_real_recording(gateway, factory):
+    karaoke = make_tracks("Taylor Swift", 1, "karaoke")[0]
+    karaoke = type(karaoke)(karaoke.uri, "Blank Space - Karaoke Version", karaoke.artists)
+    stranger = make_tracks("Spanish Swift", 1)[0]
+    real = make_tracks("Taylor Swift", 1, "real")[0]
+    gateway.search_results['track:"Blank Space" artist:"Taylor Swift"'] = [karaoke, stranger, real]
+
+    built = factory.build(
+        SourceSpec(type="pinned", tracks=[TrackRef(title="Blank Space", artist="Taylor Swift")])
+    )
+
+    assert take(built.source, 10) == [real]
