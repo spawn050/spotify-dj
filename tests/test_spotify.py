@@ -6,6 +6,7 @@ from spotify_dj.models import Track
 from spotify_dj.spotify import (
     NoActiveDeviceError,
     NotLoggedInError,
+    SpotifyError,
     SpotipyGateway,
     connect,
 )
@@ -86,10 +87,10 @@ def test_queueing_without_a_device_raises_domain_error(client):
         SpotipyGateway(client).add_to_queue("spotify:track:1")
 
 
-def test_other_spotify_errors_propagate(client):
+def test_other_spotify_errors_become_readable_domain_errors(client):
     client.queue_error = spotipy.SpotifyException(403, -1, "Premium required")
 
-    with pytest.raises(spotipy.SpotifyException):
+    with pytest.raises(SpotifyError, match="403.*Premium required"):
         SpotipyGateway(client).add_to_queue("spotify:track:1")
 
 

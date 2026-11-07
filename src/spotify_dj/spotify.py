@@ -1,5 +1,7 @@
 """The only module that talks to Spotify. The rest of the app depends on SpotifyGateway."""
 
+from collections.abc import Callable
+from functools import wraps
 from typing import Literal, Protocol
 
 import spotipy
@@ -22,6 +24,10 @@ SEARCH_PAGE_SIZE = 10
 
 class NoActiveDeviceError(Exception):
     """Spotify has no device to play on, so nothing can be queued."""
+
+
+class SpotifyError(Exception):
+    """Spotify rejected a request (e.g. the account is not Premium)."""
 
 
 class NotLoggedInError(Exception):
@@ -48,22 +54,39 @@ def _to_track(item: dict) -> Track:
     )
 
 
+def _readable_errors[**P, R](method: Callable[P, R]) -> Callable[P, R]:
+    """Show callers a SpotifyError instead of spotipy's raw exception."""
+
+    @wraps(method)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return method(*args, **kwargs)
+        except spotipy.SpotifyException as error:
+            raise SpotifyError(f"Spotify returned {error.http_status}: {error.msg}") from error
+
+    return wrapper
+
+
 class SpotipyGateway:
     def __init__(self, client: spotipy.Spotify) -> None:
         self._client = client
 
+    @_readable_errors
     def search_tracks(self, query: str, offset: int = 0) -> list[Track]:
         result = self._client.search(q=query, type="track", limit=SEARCH_PAGE_SIZE, offset=offset)
         return [_to_track(item) for item in result["tracks"]["items"] if item]
 
+    @_readable_errors
     def top_tracks(self, time_range: TimeRange) -> list[Track]:
         result = self._client.current_user_top_tracks(limit=50, time_range=time_range)
         return [_to_track(item) for item in result["items"]]
 
+    @_readable_errors
     def top_artists(self, time_range: TimeRange) -> list[str]:
         result = self._client.current_user_top_artists(limit=50, time_range=time_range)
         return [item["name"] for item in result["items"]]
 
+    @_readable_errors
     def playback(self) -> Playback:
         queue = self._client.queue() or {}
         current = queue.get("currently_playing")
@@ -72,6 +95,7 @@ class SpotipyGateway:
             upcoming_uris=tuple(item["uri"] for item in queue.get("queue", [])),
         )
 
+    @_readable_errors
     def add_to_queue(self, uri: str) -> None:
         try:
             self._client.add_to_queue(uri)
