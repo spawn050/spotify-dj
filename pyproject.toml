@@ -23,6 +23,7 @@ packages = ["src/spotify_dj"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 markers = ["live: hits the real Spotify API and queues real songs (opt in with -m live)"]
 addopts = "-m 'not live'"
 
