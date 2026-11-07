@@ -1,0 +1,33 @@
+[project]
+name = "spotify-dj"
+version = "0.1.0"
+description = "An MCP server that turns Claude into a Spotify DJ."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=2.3.0",
+    "python-dotenv>=1.2.4",
+    "spotipy>=2.26.0",
+]
+
+[project.scripts]
+spotify-dj = "spotify_dj.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/spotify_dj"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = ["live: hits the real Spotify API and queues real songs (opt in with -m live)"]
+addopts = "-m 'not live'"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+]

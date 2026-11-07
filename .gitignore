@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# spotify-dj runtime files
+.spotify_token.json
+logs/
